@@ -1,38 +1,57 @@
 # Export DATA (From PC - External Drive)
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+
+$script:log = $null
 
 function Wait-Enter {
     param([string]$Prompt = 'Press ENTER to continue...')
     [void](Read-Host -Prompt $Prompt)
 }
 
-function Get-VolumesFromDiskpart {
-    $tmp = [System.IO.Path]::GetTempFileName()
-    Set-Content -LiteralPath $tmp -Value "list volume" -Encoding ASCII
-    $raw = cmd /c "diskpart /s `"$tmp`"" 2>$null
-    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+function Write-Log {
+    param([string]$Message)
+    if (-not $script:log) { return }
+    try {
+        Add-Content -LiteralPath $script:log -Value ("{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $Message) -Encoding ASCII
+    } catch {
+        Write-Host "[WARN] Failed to write log entry: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
 
-    $rows = @()
-    foreach ($line in $raw) {
-        if ($line -match '^\s*Volume\s+\d+') {
-            $parts = ($line -replace '\s{2,}', '|').Trim('|').Split('|')
-            $volText = $parts[0].Trim()
-            $num = $null
-            if ($volText -match 'Volume\s+(\d+)') { $num = [int]$Matches[1] }
-            $rows += [pscustomobject]@{
-                Number = $num
-                Volume = $volText
-                Ltr    = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
-                Label  = if ($parts.Count -gt 2) { $parts[2].Trim() } else { "" }
-                Fs     = if ($parts.Count -gt 3) { $parts[3].Trim() } else { "" }
-                Type   = if ($parts.Count -gt 4) { $parts[4].Trim() } else { "" }
-                Size   = if ($parts.Count -gt 5) { $parts[5].Trim() } else { "" }
-                Status = if ($parts.Count -gt 6) { $parts[6].Trim() } else { "" }
-                Info   = if ($parts.Count -gt 7) { $parts[7].Trim() } else { "" }
+function Get-VolumesFromDiskpart {
+    try {
+        $tmp = [System.IO.Path]::GetTempFileName()
+        Set-Content -LiteralPath $tmp -Value "list volume" -Encoding ASCII
+        $raw = cmd /c "diskpart /s `"$tmp`"" 2>$null
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+
+        $rows = @()
+        foreach ($line in $raw) {
+            if ($line -match '^\s*Volume\s+\d+') {
+                $parts = ($line -replace '\s{2,}', '|').Trim('|').Split('|')
+                $volText = $parts[0].Trim()
+                $num = $null
+                if ($volText -match 'Volume\s+(\d+)') { $num = [int]$Matches[1] }
+                $rows += [pscustomobject]@{
+                    Number = $num
+                    Volume = $volText
+                    Ltr    = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
+                    Label  = if ($parts.Count -gt 2) { $parts[2].Trim() } else { "" }
+                    Fs     = if ($parts.Count -gt 3) { $parts[3].Trim() } else { "" }
+                    Type   = if ($parts.Count -gt 4) { $parts[4].Trim() } else { "" }
+                    Size   = if ($parts.Count -gt 5) { $parts[5].Trim() } else { "" }
+                    Status = if ($parts.Count -gt 6) { $parts[6].Trim() } else { "" }
+                    Info   = if ($parts.Count -gt 7) { $parts[7].Trim() } else { "" }
+                }
             }
         }
+        return $rows
+    } catch {
+        $msg = "Failed to query volumes: $($_.Exception.Message)"
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        Write-Log "[ERROR] $msg"
+        return @()
     }
-    return $rows
 }
 
 function Ensure-DriveLetter {
@@ -66,15 +85,21 @@ function Ensure-DriveLetter {
 
     foreach ($candidate in $candidates) {
         if ($usedLetters -contains $candidate) { continue }
-        $tmp = [System.IO.Path]::GetTempFileName()
-        $script = "select volume $number`nassign letter=$candidate"
-        Set-Content -LiteralPath $tmp -Value $script -Encoding ASCII
-        $null = cmd /c "diskpart /s `"$tmp`"" 2>$null
-        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 300
-        $updated = Get-VolumesFromDiskpart | Where-Object { $_.Number -eq $number } | Select-Object -First 1
-        $newLetter = if ($updated) { & $normalize $updated.Ltr } else { '' }
-        if ($newLetter) { return ($newLetter + ':') }
+        try {
+            $tmp = [System.IO.Path]::GetTempFileName()
+            $script = "select volume $number`nassign letter=$candidate"
+            Set-Content -LiteralPath $tmp -Value $script -Encoding ASCII
+            $null = cmd /c "diskpart /s `"$tmp`"" 2>$null
+            Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 300
+            $updated = Get-VolumesFromDiskpart | Where-Object { $_.Number -eq $number } | Select-Object -First 1
+            $newLetter = if ($updated) { & $normalize $updated.Ltr } else { '' }
+            if ($newLetter) { return ($newLetter + ':') }
+        } catch {
+            $msg = "Failed to assign drive letter for volume $number: $($_.Exception.Message)"
+            Write-Host "[ERROR] $msg" -ForegroundColor Red
+            Write-Log "[ERROR] $msg"
+        }
     }
 
     return $null
@@ -179,51 +204,116 @@ function Pick-DriveLetter {
 Clear-Host
 Write-Host "Export Data from PC to External Drive" -ForegroundColor Green
 
+$overallSucceeded = $true
+$errorMessages = @()
+
 $src = 'C:\MOVEME'
-if (-not (Test-Path $src)) { Write-Host "[ERROR] $src not found." -ForegroundColor Red; Wait-Enter; return }
+if (-not (Test-Path $src)) {
+    $overallSucceeded = $false
+    $msg = "$src not found."
+    $errorMessages += $msg
+    Write-Host "[ERROR] $msg" -ForegroundColor Red
+    Write-Log "[ERROR] $msg"
+}
 
-$data = Pick-DriveLetter -PreferLabel 'data' -MenuTitle 'Destination Volumes' -PromptLabel 'the target location' -ContextMessage 'Select the EXTERNAL drive where MOVEME Data will be exported. Any existing MOVEME folder will be REMOVED.'
-if (-not $data) { Write-Host "[ERROR] No destination selected." -ForegroundColor Red; Wait-Enter; return }
-Write-Host "[OK] Using $data" -ForegroundColor Yellow
-
-$dest = Join-Path ($data + '\\') 'MOVEME'
-$logDir = Join-Path ($data + '\\') 'Logs'
-try {
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-} catch {
-    $fallbackLogDir = Join-Path ([System.IO.Path]::GetTempPath()) 'MOVEME'
-    Write-Host "[WARN] Unable to create log directory $logDir. Falling back to $fallbackLogDir. $($_.Exception.Message)" -ForegroundColor Yellow
-    try {
-        New-Item -ItemType Directory -Force -Path $fallbackLogDir | Out-Null
-        $logDir = $fallbackLogDir
-    } catch {
-        Write-Host "[WARN] Failed to prepare fallback log directory $fallbackLogDir. Logs disabled. $($_.Exception.Message)" -ForegroundColor Yellow
-        $logDir = $null
+$data = $null
+if ($overallSucceeded) {
+    $data = Pick-DriveLetter -PreferLabel 'data' -MenuTitle 'Destination Volumes' -PromptLabel 'the target location' -ContextMessage 'Select the EXTERNAL drive where MOVEME Data will be exported. Any existing MOVEME folder will be REMOVED.'
+    if (-not $data) {
+        $overallSucceeded = $false
+        $msg = "No destination selected."
+        $errorMessages += $msg
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        Write-Log "[ERROR] $msg"
+    } else {
+        Write-Host "[OK] Using $data" -ForegroundColor Yellow
     }
 }
-$log = if ($logDir) { Join-Path $logDir ("Export_{0:yyyy-MM-dd_HH-mm-ss}.txt" -f (Get-Date)) } else { $null }
 
-if (Test-Path -LiteralPath $dest) {
-    Write-Host "[INFO] Removing existing MOVEME folder on $data" -ForegroundColor Yellow
+$dest = $null
+$logDir = $null
+if ($overallSucceeded) {
+    $dest = Join-Path ($data + '\\') 'MOVEME'
+    $logDir = Join-Path ($data + '\\') 'Logs'
     try {
-        Remove-Item -LiteralPath ${dest} -Recurse -Force -ErrorAction Stop
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     } catch {
-        Write-Host "[ERROR] Failed to remove ${dest}: $($_.Exception.Message)" -ForegroundColor Red
-        Wait-Enter
-        return
+        $fallbackLogDir = Join-Path ([System.IO.Path]::GetTempPath()) 'MOVEME'
+        $msg = "Unable to create log directory $logDir. Falling back to $fallbackLogDir. $($_.Exception.Message)"
+        Write-Host "[WARN] $msg" -ForegroundColor Yellow
+        Write-Log "[WARN] $msg"
+        try {
+            New-Item -ItemType Directory -Force -Path $fallbackLogDir | Out-Null
+            $logDir = $fallbackLogDir
+        } catch {
+            $msg = "Failed to prepare fallback log directory $fallbackLogDir. Logs disabled. $($_.Exception.Message)"
+            Write-Host "[WARN] $msg" -ForegroundColor Yellow
+            Write-Log "[WARN] $msg"
+            $logDir = $null
+        }
+    }
+    if ($logDir) {
+        $script:log = Join-Path $logDir ("Export_{0:yyyy-MM-dd_HH-mm-ss}.txt" -f (Get-Date))
     }
 }
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-if (Get-Command robocopy.exe -ErrorAction SilentlyContinue) {
-    $robocopyArgs = @("$src", "$dest", '*.*', '/E', '/COPY:DAT', '/R:1', '/W:0', '/MT:32', '/Tee', '/XF', 'desktop.ini', '/XD', 'System Volume Information', '$RECYCLE.BIN')
-    if ($log) { $robocopyArgs += "/Log:$log" }
-    robocopy @robocopyArgs
-    $rc = $LASTEXITCODE
-    if ($rc -ge 8) { Write-Host "[ERROR] Robocopy failed ($rc)." -ForegroundColor Red; Wait-Enter; return }
+if ($overallSucceeded -and $dest) {
+    if (Test-Path -LiteralPath $dest) {
+        Write-Host "[INFO] Removing existing MOVEME folder on $data" -ForegroundColor Yellow
+        try {
+            Remove-Item -LiteralPath ${dest} -Recurse -Force -ErrorAction Stop
+        } catch {
+            $overallSucceeded = $false
+            $msg = "Failed to remove ${dest}: $($_.Exception.Message)"
+            $errorMessages += $msg
+            Write-Host "[ERROR] $msg" -ForegroundColor Red
+            Write-Log "[ERROR] $msg"
+        }
+    }
+    if ($overallSucceeded) {
+        try {
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        } catch {
+            $overallSucceeded = $false
+            $msg = "Failed to create destination $dest: $($_.Exception.Message)"
+            $errorMessages += $msg
+            Write-Host "[ERROR] $msg" -ForegroundColor Red
+            Write-Log "[ERROR] $msg"
+        }
+    }
+}
+
+if ($overallSucceeded -and $dest) {
+    try {
+        if (Get-Command robocopy.exe -ErrorAction SilentlyContinue) {
+            $robocopyArgs = @("$src", "$dest", '*.*', '/E', '/COPY:DAT', '/R:1', '/W:0', '/MT:32', '/Tee', '/XF', 'desktop.ini', '/XD','System Volume Information', '$RECYCLE.BIN')
+            if ($script:log) { $robocopyArgs += "/Log:$script:log" }
+            robocopy @robocopyArgs
+            $rc = $LASTEXITCODE
+            if ($rc -ge 8) { throw "Robocopy failed ($rc)." }
+        } else {
+            Copy-Item "$src\\*" "$dest\\" -Recurse -Force -ErrorAction Stop
+        }
+    } catch {
+        $overallSucceeded = $false
+        $msg = "Data transfer failed: $($_.Exception.Message)"
+        $errorMessages += $msg
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        Write-Log "[ERROR] $msg"
+    }
+}
+
+if ($overallSucceeded) {
+    Write-Host "[DONE] Exported to $dest" -ForegroundColor Cyan
 } else {
-    Copy-Item "$src\\*" "$dest\\" -Recurse -Force -ErrorAction Stop
+    Write-Host "[WARN] Export incomplete." -ForegroundColor Yellow
 }
 
-Write-Host "[DONE] Exported to $dest" -ForegroundColor Cyan
+if ($errorMessages.Count -gt 0) {
+    Write-Host "[SUMMARY] Transfer completed with errors:" -ForegroundColor Yellow
+    foreach ($err in $errorMessages) { Write-Host " - $err" -ForegroundColor Yellow }
+} else {
+    Write-Host "[SUMMARY] Transfer completed successfully." -ForegroundColor Green
+}
+
 Wait-Enter
