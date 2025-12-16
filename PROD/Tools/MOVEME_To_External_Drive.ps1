@@ -204,7 +204,16 @@ try {
 $log = if ($logDir) { Join-Path $logDir ("Export_{0:yyyy-MM-dd_HH-mm-ss}.txt" -f (Get-Date)) } else { $null }
 
 if (Test-Path -LiteralPath $dest) {
+    $confirm = Read-Host "[WARN] ${dest} already exists on $data. Delete and recreate? (Y/N)"
+    if ($confirm.Trim().ToUpper() -notin @('Y','YES')) {
+        Write-Host "[ABORT] User declined to remove existing MOVEME folder." -ForegroundColor Yellow
+        Wait-Enter
+        return
+    }
+
     Write-Host "[INFO] Removing existing MOVEME folder on $data" -ForegroundColor Yellow
+    if ($log) { Add-Content -LiteralPath $log -Value ("[{0:yyyy-MM-dd HH:mm:ss}] Removing existing MOVEME at {1}" -f (Get-Date), $dest) }
+
     try {
         Remove-Item -LiteralPath ${dest} -Recurse -Force -ErrorAction Stop
     } catch {
