@@ -257,33 +257,17 @@ if ($overallSucceeded) {
     }
 }
 
-if ($overallSucceeded -and $dest) {
-    if (Test-Path -LiteralPath $dest) {
-        Write-Host "[INFO] Removing existing MOVEME folder on $data" -ForegroundColor Yellow
-        try {
-            Remove-Item -LiteralPath ${dest} -Recurse -Force -ErrorAction Stop
-        } catch {
-            $overallSucceeded = $false
-            $msg = "Failed to remove ${dest}: $($_.Exception.Message)"
-            $errorMessages += $msg
-            Write-Host "[ERROR] $msg" -ForegroundColor Red
-            Write-Log "[ERROR] $msg"
-        }
+if (Test-Path -LiteralPath $dest) {
+    $confirm = Read-Host "[WARN] ${dest} already exists on $data. Delete and recreate? (Y/N)"
+    if ($confirm.Trim().ToUpper() -notin @('Y','YES')) {
+        Write-Host "[ABORT] User declined to remove existing MOVEME folder." -ForegroundColor Yellow
+        Wait-Enter
+        return
     }
-    if ($overallSucceeded) {
-        try {
-            New-Item -ItemType Directory -Force -Path $dest | Out-Null
-        } catch {
-            $overallSucceeded = $false
-            $msg = "Failed to create destination $dest: $($_.Exception.Message)"
-            $errorMessages += $msg
-            Write-Host "[ERROR] $msg" -ForegroundColor Red
-            Write-Log "[ERROR] $msg"
-        }
-    }
-}
 
-if ($overallSucceeded -and $dest) {
+    Write-Host "[INFO] Removing existing MOVEME folder on $data" -ForegroundColor Yellow
+    if ($log) { Add-Content -LiteralPath $log -Value ("[{0:yyyy-MM-dd HH:mm:ss}] Removing existing MOVEME at {1}" -f (Get-Date), $dest) }
+
     try {
         if (Get-Command robocopy.exe -ErrorAction SilentlyContinue) {
             $robocopyArgs = @("$src", "$dest", '*.*', '/E', '/COPY:DAT', '/R:1', '/W:0', '/MT:32', '/Tee', '/XF', 'desktop.ini', '/XD','System Volume Information', '$RECYCLE.BIN')

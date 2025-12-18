@@ -84,7 +84,7 @@ Set "TARGET_LOCALAPPDATA=!TARGET_USERPROFILE!\AppData\Local"
 
 Set mlocal="C:\MOVEME\local\/"
 Set mroaming="C:\MOVEME\roaming\/"
-Set movescript="\\bfs-fs-p02\endusersoftware\jordan\SCRIPTS"
+::Set movescript="\\bfs-fs-p02\endusersoftware\jordan\SCRIPTS"
 Set sticky_notes="%TARGET_LOCALAPPDATA%\Packages\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe\LocalState"
 Set documents="%TARGET_USERPROFILE%\Documents"
 Set pictures="%TARGET_USERPROFILE%\Pictures"
